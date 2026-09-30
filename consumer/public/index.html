@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Live Order Board</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --panel: #ffffff; --text: #1d2330; --muted: #6b7280; --border: #e3e6ea;
+    --accent: #3b5bdb; --green: #2f9e44; --amber: #e8a100; --red: #e03131; --flash: #fff3bf;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161b; --panel: #1d2027; --text: #e7e9ee; --muted: #9aa1ad; --border: #2c313b;
+      --accent: #748ffc; --flash: #4a3f12;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px;
+           padding: 16px 24px; background: var(--panel); border-bottom: 1px solid var(--border); }
+  h1 { margin: 0; font-size: 22px; }
+  .subtitle { color: var(--muted); font-size: 13px; }
+  .conn { display: flex; gap: 16px; font-size: 13px; color: var(--muted); }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: var(--red);
+         vertical-align: -1px; transition: background .2s; }
+  .dot.up { background: var(--green); }
+  main { max-width: 1200px; margin: 0 auto; padding: 20px 24px 40px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .card .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .card .value { font-size: 28px; font-weight: 650; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .card.lag { border-width: 2px; }
+  .card.lag.ok { border-color: var(--green); } .card.lag.ok .value { color: var(--green); }
+  .card.lag.warn { border-color: var(--amber); } .card.lag.warn .value { color: var(--amber); }
+  .card.lag.bad { border-color: var(--red); } .card.lag.bad .value { color: var(--red); }
+  .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin: 18px 0 6px; }
+  button { font: inherit; padding: 8px 14px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel);
+           color: var(--text); cursor: pointer; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:disabled { opacity: .5; cursor: default; }
+  .producer-url { margin-left: auto; display: flex; gap: 6px; align-items: center; font-size: 13px; color: var(--muted); }
+  .producer-url input { font: inherit; font-size: 13px; padding: 6px 8px; width: 210px; border-radius: 6px;
+                        border: 1px solid var(--border); background: var(--panel); color: var(--text); }
+  .note { min-height: 20px; font-size: 13px; color: var(--muted); margin-bottom: 10px; }
+  .note .error { color: var(--red); }
+  .columns { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .column { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; min-width: 0; }
+  .column h2 { margin: 0; padding: 12px 16px; font-size: 15px; border-bottom: 1px solid var(--border);
+               display: flex; justify-content: space-between; gap: 8px; }
+  .column h2 .meta { color: var(--muted); font-weight: 400; font-size: 13px; }
+  ul { list-style: none; margin: 0; padding: 0; max-height: 60vh; overflow-y: auto; }
+  li { padding: 7px 16px; border-bottom: 1px solid var(--border); font-variant-numeric: tabular-nums;
+       white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  li .id { font-weight: 600; } li .offset { color: var(--muted); }
+  li.flash { animation: flash 1.6s ease-out; }
+  @keyframes flash { from { background: var(--flash); } to { background: transparent; } }
+  .empty { padding: 16px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 760px) {
+    header, main { padding-left: 16px; padding-right: 16px; }
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .columns { grid-template-columns: 1fr; }
+    .producer-url { margin-left: 0; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Live Order Board</h1>
+    <div class="subtitle">Powered by mini-kafka</div>
+  </div>
+  <div class="conn">
+    <span><span class="dot" id="producer-dot"></span>Producer</span>
+    <span><span class="dot" id="consumer-dot"></span>Consumer</span>
+  </div>
+</header>
+
+<main>
+  <section class="stats">
+    <div class="card"><div class="label">Total Orders</div><div class="value" id="total-orders">–</div></div>
+    <div class="card"><div class="label">Total Revenue (₹)</div><div class="value" id="total-revenue">–</div></div>
+    <div class="card"><div class="label">Consumer Offset</div><div class="value" id="current-offset">–</div></div>
+    <div class="card lag ok" id="lag-card"><div class="label">Lag</div><div class="value" id="lag">–</div></div>
+  </section>
+
+  <section class="controls">
+    <button class="primary" id="burst">Send 50 orders</button>
+    <button id="pause">Pause</button>
+    <button id="resume">Resume</button>
+    <label class="producer-url">Producer
+      <input id="producer-url" spellcheck="false" aria-label="Producer URL">
+      <button id="producer-url-apply">Connect</button>
+    </label>
+  </section>
+  <div class="note" id="note"></div>
+
+  <section class="columns">
+    <div class="column">
+      <h2>Orders Sent (Producer) <span class="meta" id="producer-meta"></span></h2>
+      <ul id="sent"><li class="empty">Waiting for the producer…</li></ul>
+    </div>
+    <div class="column">
+      <h2>Orders Received (Consumer) <span class="meta" id="consumer-meta"></span></h2>
+      <ul id="received"><li class="empty">Waiting for the consumer…</li></ul>
+    </div>
+  </section>
+</main>
+
+<script>
+(() => {
+  const MAX_ROWS = 50;
+  const DEFAULT_PRODUCER_URL = "__PRODUCER_URL__"; // injected by the consumer from PRODUCER_URL
+
+  function storageGet(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+  function storageSet(key, value) { try { localStorage.setItem(key, value); } catch (e) { /* private mode */ } }
+
+  let producerUrl = (new URLSearchParams(location.search).get("producer") || storageGet("producerUrl") || DEFAULT_PRODUCER_URL)
+    .replace(/\/+$/, "");
+  const $ = id => document.getElementById(id);
+  $("producer-url").value = producerUrl;
+
+  const rupees = n => Number(n).toLocaleString("en-IN");
+
+  function row(entry, flash) {
+    const o = entry.order;
+    const li = document.createElement("li");
+    li.dataset.offset = entry.offset;
+    const id = document.createElement("span");
+    id.className = "id";
+    id.textContent = "#" + o.orderId;
+    const offset = document.createElement("span");
+    offset.className = "offset";
+    offset.textContent = "offset " + entry.offset;
+    li.append(id, ` · ${o.item} × ${o.qty} · ₹${rupees(o.price)} · `, offset);
+    if (flash) li.classList.add("flash");
+    return li;
+  }
+
+  /** A newest-first list of at most MAX_ROWS orders that ignores offsets it has already shown. */
+  function orderList(el, emptyText) {
+    let lastOffset = -1;
+    return {
+      get lastOffset() { return lastOffset; },
+      /** Replaces the list; rows newer than what was shown before are highlighted (catch-up). */
+      reset(entries, currentOffset) {
+        const previous = lastOffset;
+        el.replaceChildren(...entries.slice(0, MAX_ROWS).map(e => row(e, previous >= 0 && e.offset > previous)));
+        if (!entries.length) el.innerHTML = `<li class="empty">${emptyText}</li>`;
+        lastOffset = Math.max(currentOffset, entries.length ? entries[0].offset : -1);
+      },
+      add(entry) {
+        if (entry.offset <= lastOffset) return false; // already shown (snapshot/event overlap)
+        el.querySelector(".empty")?.remove();
+        el.prepend(row(entry, true));
+        while (el.children.length > MAX_ROWS) el.lastElementChild.remove();
+        lastOffset = entry.offset;
+        return true;
+      }
+    };
+  }
+
+  const sent = orderList($("sent"), "No orders sent yet.");
+  const received = orderList($("received"), "No orders received yet.");
+
+  let consumerStats = null;
+  function showStats(s) {
+    consumerStats = s;
+    $("total-orders").textContent = rupees(s.totalOrders);
+    $("total-revenue").textContent = "₹" + rupees(s.totalRevenue);
+    $("current-offset").textContent = s.currentOffset;
+    showLag();
+  }
+
+  /**
+   * The consumer reports its lag against the high watermark it last fetched. While it is down it
+   * reports nothing, so the page also counts what the producer has published past the consumer's
+   * offset: the lag keeps climbing during an outage and drains once the consumer is back.
+   */
+  function showLag() {
+    if (!consumerStats) return;
+    const lag = Math.max(consumerStats.lag, sent.lastOffset - consumerStats.currentOffset);
+    $("lag").textContent = lag;
+    $("lag-card").className = "card lag " + (lag === 0 ? "ok" : lag <= 20 ? "warn" : "bad");
+  }
+
+  function showConsumerState(state) {
+    received.reset(state.recentOrders, state.currentOffset);
+    showStats(state);
+    $("consumer-meta").textContent = state.committedOffset >= 0 || state.resumedFrom > 0
+      ? `resumed from committed offset ${state.resumedFrom} · replayed ${state.replayedOrders} at startup`
+      : "";
+  }
+
+  let producerStatus = null;
+  function showProducerStatus(status) {
+    producerStatus = status;
+    $("pause").disabled = status.paused;
+    $("resume").disabled = !status.paused;
+    $("producer-meta").textContent = `${status.paused ? "paused" : "running"} · ${rupees(status.published)} published`;
+  }
+
+  let noteTimer;
+  function note(text, isError) {
+    const el = $("note");
+    el.replaceChildren();
+    const span = document.createElement("span");
+    if (isError) span.className = "error";
+    span.textContent = text;
+    el.append(span);
+    clearTimeout(noteTimer);
+    noteTimer = setTimeout(() => el.replaceChildren(), 6000);
+  }
+
+  /** An EventSource that reconnects forever (the consumer is stopped and started during the demo). */
+  function stream(url, dot, handlers) {
+    let source, retryTimer, closed = false;
+    function open() {
+      source = new EventSource(url);
+      source.onopen = () => $(dot).classList.add("up");
+      source.onerror = () => {
+        $(dot).classList.remove("up");
+        source.close();
+        if (!closed) retryTimer = setTimeout(open, 1500);
+      };
+      for (const [event, handle] of Object.entries(handlers)) {
+        source.addEventListener(event, e => handle(JSON.parse(e.data)));
+      }
+    }
+    open();
+    return { close() { closed = true; clearTimeout(retryTimer); source.close(); $(dot).classList.remove("up"); } };
+  }
+
+  // Consumer (same origin): initial state, then its event stream (which starts with a snapshot).
+  fetch("/state").then(r => r.json()).then(showConsumerState).catch(() => {});
+  stream("/events", "consumer-dot", {
+    snapshot: showConsumerState,
+    order: e => { if (received.add(e.order)) showStats(e.stats); }
+  });
+
+  // Producer (another origin, CORS).
+  let producerStream;
+  function connectProducer() {
+    producerStream?.close();
+    producerStream = stream(producerUrl + "/events", "producer-dot", {
+      snapshot: s => { sent.reset(s.recent, s.status.lastOffset); showProducerStatus(s.status); showLag(); },
+      order: e => {
+        if (!sent.add(e)) return;
+        if (producerStatus) showProducerStatus({ ...producerStatus, published: producerStatus.published + 1 });
+        showLag();
+      },
+      status: showProducerStatus
+    });
+  }
+  connectProducer();
+
+  async function callProducer(path, label) {
+    try {
+      const response = await fetch(producerUrl + path, { method: "POST" });
+      const body = await response.json();
+      if (!response.ok) throw new Error(body.error || response.statusText);
+      return body;
+    } catch (e) {
+      note(`${label} failed: ${e.message} (is the producer running at ${producerUrl}?)`, true);
+      return null;
+    }
+  }
+
+  $("burst").onclick = async () => {
+    $("burst").disabled = true;
+    const result = await callProducer("/burst?count=50", "Send 50 orders");
+    if (result) note(`Published ${result.published} orders — watch the lag rise and drain.`);
+    $("burst").disabled = false;
+  };
+  $("pause").onclick = async () => { const s = await callProducer("/pause", "Pause"); if (s) showProducerStatus(s); };
+  $("resume").onclick = async () => { const s = await callProducer("/resume", "Resume"); if (s) showProducerStatus(s); };
+  $("producer-url-apply").onclick = e => {
+    e.preventDefault();
+    producerUrl = $("producer-url").value.trim().replace(/\/+$/, "") || DEFAULT_PRODUCER_URL;
+    $("producer-url").value = producerUrl;
+    storageSet("producerUrl", producerUrl);
+    connectProducer();
+  };
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,121 @@
+# Live Order Board: ZooKeeper + three minikafka brokers + order-producer + order-consumer.
+#
+#   docker compose up --build        # then open http://localhost:8080
+#   docker compose stop consumer     # demo scenario 2 (then: docker compose start consumer)
+#   docker compose down -v           # stop and delete all data
+#
+# Every service runs the one minikafka-demo image; only `producer` builds it (see Dockerfile).
+name: minikafka-demo
+
+x-demo-image: &demo-image
+  image: minikafka-demo:latest
+  pull_policy: never
+  restart: unless-stopped
+
+x-broker: &broker
+  <<: *demo-image
+  depends_on:
+    zookeeper:
+      condition: service_healthy
+  healthcheck:
+    test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/9092"]
+    interval: 3s
+    timeout: 2s
+    retries: 20
+    start_period: 5s
+
+x-brokers-healthy: &brokers-healthy
+  broker1:
+    condition: service_healthy
+  broker2:
+    condition: service_healthy
+  broker3:
+    condition: service_healthy
+
+services:
+  zookeeper:
+    image: zookeeper:3.9
+    restart: unless-stopped
+    environment:
+      ZOO_4LW_COMMANDS_WHITELIST: "ruok,srvr"
+      ZOO_ADMINSERVER_ENABLED: "false"
+    volumes:
+      - zk-data:/data
+      - zk-datalog:/datalog
+    healthcheck:
+      test: ["CMD-SHELL", "zkServer.sh status"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Replication factor 3 with min.insync.replicas 2: any one broker can be stopped mid-demo.
+  broker1:
+    <<: *broker
+    command: ["minikafka", "server", "--broker-id", "1", "--zk", "zookeeper:2181", "--port", "9092",
+              "--advertised-host", "broker1", "--data-dir", "/data", "--min-insync", "2"]
+    volumes:
+      - broker1-data:/data
+
+  broker2:
+    <<: *broker
+    command: ["minikafka", "server", "--broker-id", "2", "--zk", "zookeeper:2181", "--port", "9092",
+              "--advertised-host", "broker2", "--data-dir", "/data", "--min-insync", "2"]
+    volumes:
+      - broker2-data:/data
+
+  broker3:
+    <<: *broker
+    command: ["minikafka", "server", "--broker-id", "3", "--zk", "zookeeper:2181", "--port", "9092",
+              "--advertised-host", "broker3", "--data-dir", "/data", "--min-insync", "2"]
+    volumes:
+      - broker3-data:/data
+
+  producer:
+    <<: *demo-image
+    build:
+      context: .
+      args:
+        MINIKAFKA_REF: ${MINIKAFKA_REF:-main}
+    pull_policy: build
+    command: ["order-producer"]
+    depends_on: *brokers-healthy
+    environment:
+      BROKER_BOOTSTRAP: "broker1:9092,broker2:9092,broker3:9092"
+      TOPIC: orders
+      PORT: "8081"
+      PRODUCE_INTERVAL_MS: "1000"
+      JAVA_OPTS: "-Xmx128m"
+    ports:
+      - "8081:8081"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8081"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+  consumer:
+    <<: *demo-image
+    command: ["order-consumer"]
+    depends_on: *brokers-healthy
+    environment:
+      BROKER_BOOTSTRAP: "broker1:9092,broker2:9092,broker3:9092"
+      TOPIC: orders
+      PORT: "8080"
+      CONSUMER_GROUP: order-board
+      PRODUCER_URL: "http://localhost:8081" # as seen from the browser
+      PROCESS_DELAY_MS: "100"
+      JAVA_OPTS: "-Xmx128m"
+    ports:
+      - "8080:8080"
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080"]
+      interval: 3s
+      timeout: 2s
+      retries: 20
+
+volumes:
+  zk-data:
+  zk-datalog:
+  broker1-data:
+  broker2-data:
+  broker3-data:
